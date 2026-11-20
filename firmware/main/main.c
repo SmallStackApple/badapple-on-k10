@@ -18,7 +18,6 @@ void app_main(void)
 
     ESP_ERROR_CHECK(k10_board_init());
     ESP_ERROR_CHECK(k10_lcd_init());
-    ESP_ERROR_CHECK(k10_audio_init(16000));
 
     static media_t media;
     esp_err_t err = media_open(&media);
@@ -29,6 +28,8 @@ void app_main(void)
             vTaskDelay(pdMS_TO_TICKS(1000));
         }
     }
+
+    ESP_ERROR_CHECK(k10_audio_init(media.audio_rate));
 
     k10_lcd_fill(k10_rgb565(0, 0, 0));
     ESP_LOGI(TAG, "starting player");

@@ -23,7 +23,7 @@
 static const char *TAG = "player";
 
 #define RLE_CAP        4096
-#define AUDIO_CHUNK    2048          /* mono samples per read */
+#define AUDIO_MAX_SAMPLES 2048       /* upper bound for one ADPCM block */
 #define AUDIO_VOLUME   45            /* percent */
 #define EQ_FREQ_HZ     3500.0f       /* tame the small-speaker harshness */
 #define EQ_Q           1.2f
@@ -66,6 +66,7 @@ static uint16_t *s_fb;
 static uint8_t *s_rle;
 static int16_t *s_pcm;
 static int16_t *s_stereo;
+static uint8_t *s_adpcm;
 
 static volatile bool s_paused;
 static volatile uint32_t s_restart_seq;
@@ -111,6 +112,59 @@ static void decode_frame(const uint8_t *src, size_t len, uint16_t *fb,
     }
 }
 
+/* Standard IMA ADPCM (adpcm_ima_wav) tables. */
+static const int16_t ima_step[89] = {
+    7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41,
+    45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209,
+    230, 253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876,
+    963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024,
+    3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493,
+    10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086,
+    29794, 32767,
+};
+static const int8_t ima_index[16] = {
+    -1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8,
+};
+
+static int adpcm_decode_block(const uint8_t *src, size_t len, int16_t *out,
+                              int max_samples)
+{
+    if (len < 4 || max_samples < 1) {
+        return 0;
+    }
+    int32_t pred = (int16_t)(src[0] | (src[1] << 8));
+    int index = src[2];
+    if (index < 0) index = 0;
+    if (index > 88) index = 88;
+
+    int n = 0;
+    out[n++] = (int16_t)pred;
+    size_t p = 4;
+    while (p < len && n < max_samples) {
+        uint8_t byte = src[p++];
+        for (int k = 0; k < 2 && n < max_samples; k++) {
+            int nib = (k == 0) ? (byte & 0x0F) : (byte >> 4);
+            int step = ima_step[index];
+            int diff = step >> 3;
+            if (nib & 1) diff += step >> 2;
+            if (nib & 2) diff += step >> 1;
+            if (nib & 4) diff += step;
+            if (nib & 8) {
+                pred -= diff;
+            } else {
+                pred += diff;
+            }
+            if (pred > 32767) pred = 32767;
+            if (pred < -32768) pred = -32768;
+            index += ima_index[nib];
+            if (index < 0) index = 0;
+            if (index > 88) index = 88;
+            out[n++] = (int16_t)pred;
+        }
+    }
+    return n;
+}
+
 enum {
     BTN_NONE = 0,
     BTN_A,
@@ -147,6 +201,7 @@ static void audio_task(void *arg)
 {
     media_t *m = arg;
     uint32_t pos = 0;
+    uint32_t decoded = 0;
     uint32_t last_seq = s_restart_seq;
     bool started = false;
 
@@ -154,6 +209,7 @@ static void audio_task(void *arg)
         if (s_restart_seq != last_seq) {
             last_seq = s_restart_seq;
             pos = 0;
+            decoded = 0;
             started = false;
             k10_audio_flush();
             eq_init(&s_eq, EQ_FREQ_HZ, (float)m->audio_rate, EQ_Q, EQ_GAIN_DB);
@@ -169,19 +225,32 @@ static void audio_task(void *arg)
             }
             started = true;
         }
-        if (pos >= m->audio_bytes) {
+        if (pos >= m->audio_bytes || decoded >= m->audio_samples) {
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
 
-        size_t n = 0;
-        if (media_read_audio(m, pos, s_pcm, AUDIO_CHUNK * sizeof(int16_t), &n) != ESP_OK ||
-            n == 0) {
+        size_t read = 0;
+        if (media_read_audio(m, pos, s_adpcm, m->audio_block_align, &read) != ESP_OK ||
+            read < 4) {
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
 
-        int samples = (int)(n / sizeof(int16_t));
+        int samples = adpcm_decode_block(s_adpcm, read, s_pcm,
+                                         (int)m->audio_samples_per_block);
+        if (samples <= 0) {
+            pos += (uint32_t)read;
+            continue;
+        }
+        if (decoded + (uint32_t)samples > m->audio_samples) {
+            samples = (int)(m->audio_samples - decoded);
+        }
+        if (samples <= 0) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+
         for (int i = 0; i < samples; i++) {
             float x = (float)s_pcm[i] / 32768.0f;
             float y = eq_process(&s_eq, x) * (AUDIO_VOLUME / 100.0f);
@@ -192,7 +261,8 @@ static void audio_task(void *arg)
             s_stereo[i * 2 + 1] = v;
         }
         k10_audio_write(s_stereo, samples);
-        pos += (uint32_t)n;
+        pos += (uint32_t)read;
+        decoded += (uint32_t)samples;
     }
 }
 
@@ -276,20 +346,22 @@ static void video_task(void *arg)
 esp_err_t player_start(media_t *m)
 {
     size_t fb_bytes = (size_t)m->width * m->height * sizeof(uint16_t);
+    size_t pcm_bytes = (size_t)m->audio_samples_per_block * sizeof(int16_t);
+    size_t stereo_bytes = (size_t)m->audio_samples_per_block * 2 * sizeof(int16_t);
     s_fb = heap_caps_malloc(fb_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     s_rle = heap_caps_malloc(RLE_CAP, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    s_pcm = heap_caps_malloc(AUDIO_CHUNK * sizeof(int16_t),
-                             MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    s_stereo = heap_caps_malloc(AUDIO_CHUNK * 2 * sizeof(int16_t),
-                                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!s_fb || !s_rle || !s_pcm || !s_stereo) {
+    s_pcm = heap_caps_malloc(pcm_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    s_stereo = heap_caps_malloc(stereo_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    s_adpcm = heap_caps_malloc(m->audio_block_align,
+                               MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!s_fb || !s_rle || !s_pcm || !s_stereo || !s_adpcm) {
         ESP_LOGE(TAG, "buffer allocation failed (fb=%u)", (unsigned)fb_bytes);
         return ESP_ERR_NO_MEM;
     }
 
-    ESP_LOGI(TAG, "buffers: fb=%u rle=%u audio=%u, free internal=%u dma=%u",
-             (unsigned)fb_bytes, RLE_CAP,
-             (unsigned)(AUDIO_CHUNK * 2 * sizeof(int16_t)),
+    ESP_LOGI(TAG, "buffers: fb=%u rle=%u pcm=%u stereo=%u adpcm=%u, free internal=%u dma=%u",
+             (unsigned)fb_bytes, RLE_CAP, (unsigned)pcm_bytes,
+             (unsigned)stereo_bytes, (unsigned)m->audio_block_align,
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
 

@@ -13,8 +13,11 @@ typedef struct {
     uint16_t fps;
     uint32_t frame_count;
     uint32_t audio_rate;
-    uint32_t audio_samples;
+    uint32_t audio_codec;
     uint32_t audio_bytes;
+    uint32_t audio_samples;
+    uint32_t audio_block_align;
+    uint32_t audio_samples_per_block;
     uint32_t frame_data_off;
     uint32_t audio_off;
     uint32_t *offsets;

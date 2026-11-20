@@ -8,7 +8,8 @@
 
 - 304×228 @ 30fps，居中显示在 320×240 横屏上
 - 原视频是纯黑白剪影，转成 1-bit 全帧 RLE，平均约 982 字节/帧
-- 16kHz 单声道 16-bit PCM 音频，通过板载 NS4168 功放播放
+- 22.05kHz 单声道 IMA ADPCM 音频（约 2.42MB），通过板载 NS4168 功放播放
+- 播放时做 3.5kHz 峰值 EQ（-5dB）+ 0.45 音量 + 软限幅，抑制小喇叭的刺耳感
 - A 键暂停/继续，B 键从头重播，播完自动循环
 
 ## 硬件与引脚
@@ -39,7 +40,7 @@ firmware/
     k10_board.c/.h      I2C + TCA9555（背光/功放/按键）
     k10_lcd.c/.h        ILI9341 初始化 + 分块 DMA 推屏
     k10_audio.c/.h      I2S 输出
-    media.c/.h          读 media 分区、帧索引、PCM
+    media.c/.h          读 media 分区、帧索引、ADPCM 块
     player.c/.h         RLE 解码、30fps 时间轴、音画任务
 tools/
   build_media.py        ffmpeg 转码 + RLE + 打包
@@ -72,17 +73,19 @@ esptool --chip esp32s3 -p COM8 -b 921600 write-flash 0x210000 media\badapple.bin
 
 ## 媒体格式
 
-`media/badapple.bin` 约 12.87 MiB：
+`media/badapple.bin` 约 8.49 MiB：
 
 | 偏移 | 内容 |
 |---|---|
-| 0x00 | `BAV1` + 版本 + 宽高/fps |
-| 0x0C | 帧数、音频采样率/样本数、各段偏移 |
-| 0x24 | `uint32 frame_offsets[6574]` |
-| 0x62DDA0 之前 | 每帧 `uint16 len` + RLE 数据（4 字节对齐） |
-| 0x62DDA0 | 16kHz mono s16le PCM，7,012,790 字节 |
+| 0x00 | `BAV1` + 版本 2 + 宽高/fps |
+| 0x0C | 帧数、音频采样率/编码/字节数/样本数、块对齐、每块样本数、各段偏移 |
+| 0x30 | `uint32 frame_offsets[6574]` |
+| 0x62DDAC 之前 | 每帧 `uint16 len` + RLE 数据（4 字节对齐） |
+| 0x62DDAC | IMA ADPCM 22.05kHz mono，2,424,832 字节（block_align=1024，2041 样本/块） |
 
 RLE token：`bit7 = 颜色(1=白)`，`bit0-6 = 连续像素数(1..127)`，整帧顺序填充 304×228。
+
+音频每个 ADPCM 块 4 字节头（初始 predictor + step index）后跟 4-bit nibble；播放器在 Core 0 解码成 16-bit PCM，再做 EQ/音量处理并写入 I2S。
 
 ## 备份与恢复
 
@@ -105,5 +108,5 @@ esptool --chip esp32s3 -p COM8 -b 921600 write-flash 0 `
 ## 已知限制
 
 - 画面是 304×228，四周有 8/6 像素黑边；320×240 全屏 30fps 受 40MHz SPI 带宽限制
-- 音频使用 16kHz PCM（约 7MB），目的是不引入编解码器并留出 flash 余量
+- 音频使用 22.05kHz IMA ADPCM（约 2.4MB），并叠加 3.5kHz EQ/软限幅；外接喇叭会明显更好
 - 首次播放前约 0.5 秒黑屏（任务启动 + 音频 DMA 预充）
