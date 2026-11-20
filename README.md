@@ -6,7 +6,7 @@
 ![ESP-IDF v6.1](https://img.shields.io/badge/ESP--IDF-v6.1-blue)
 
 Play the full 3:39 *Bad Apple!!* shadow-art video — with sound — on a **DFRobot UNIHIKER K10**.
-Video and audio live in the board's internal 16 MB flash: no SD card, no Arduino core, no external DAC.
+Video and audio live in the board's internal 16 MB flash: no SD card, no Arduino core, no extra wiring.
 
 **English** | [简体中文](README.zh-CN.md)
 
@@ -18,12 +18,12 @@ Video and audio live in the board's internal 16 MB flash: no SD card, no Arduino
 | | |
 |---|---|
 | Board | UNIHIKER K10 — ESP32-S3 (N16R8), 240 MHz, 16 MB flash, 8 MB PSRAM |
-| Display | 2.8" 320×240 IPS (ILI9341), SPI @ 40 MHz |
+| Display | 2.8" 320×240 colour LCD (ILI9341), SPI @ 40 MHz |
 | Video | 304×228, 30 fps, 1-bit full-frame RLE — 6,574 frames, ~982 B/frame |
 | Audio | 16 kHz mono s16le PCM → NS4168, biquad EQ + soft limiter |
-| Media | 12.87 MiB blob in a dedicated 14.6 MiB flash partition |
+| Media | 12.87 MiB blob in a dedicated 13.94 MiB (14.61 MB) flash partition |
 | Firmware | ESP-IDF v6.1, FreeRTOS, two pinned tasks, no WiFi/BT |
-| Boot to first frame | ≈1.4 s from reset (≈0.9 s of that is panel init) |
+| Boot to first frame | ≈1.4 s from reset (≈0.9 s boot + panel init, then a 0.5 s sync gate) |
 | Controls | **A** pause/resume, **B** restart; loops automatically |
 
 ## How it works
@@ -42,9 +42,9 @@ Video and audio live in the board's internal 16 MB flash: no SD card, no Arduino
                      └──────────────────┘            └──────────────────┘
 ```
 
-- **Video path** — a `uint32` index gives O(1) access to any frame. The frame is decoded into a
-  full RGB565 buffer (304×228×2 = 138,624 B) and pushed as one DMA transfer, so there is no
-  half-drawn frame on screen.
+- **Video path** — a `uint32` index gives O(1) access to any frame. The frame is fully decoded
+  into an RGB565 buffer (304×228×2 = 138,624 B) before the first pixel is sent; the SPI driver
+  then pushes it in 32-row chunks (≈19 KB each, under the DMA limit).
 - **Audio path** — the audio task reads 2,048 mono samples at a time, runs one peaking biquad
   (−5 dB @ 3.5 kHz, Q = 1.2), scales to 45 %, soft-clips at ±0.95, duplicates to stereo and
   feeds a 4 × 128-frame I2S DMA ring.
@@ -57,20 +57,20 @@ Video and audio live in the board's internal 16 MB flash: no SD card, no Arduino
 
 | Stage | Cost | Budget |
 |---|---|---|
-| Full-frame SPI transfer (138,624 B @ 40 MHz) | ≈27.7 ms | 33.3 ms/frame |
-| RLE decode + RGB565 fill (69,312 px) | < 2 ms | — |
-| Flash read (average frame) | ≈1 ms | — |
-| Internal RAM | ≈160 KB (framebuffer 135 KB, audio 8 KB, RLE 4 KB) | 320 KB DRAM |
-| Firmware image | 246 KB | 2 MB app partition |
+| Full-frame SPI transfer (138,624 B @ 40 MHz, 32-row chunks) | ≈27.7 ms | 33.3 ms/frame |
+| RLE decode + RGB565 fill (69,312 px) | ≈1–2 ms (estimate) | — |
+| Flash read (average frame) | ≈2 ms (estimate) | — |
+| Internal RAM | ≈151 KB (framebuffer 135 KB, PCM 4 KB + stereo 8 KB, RLE 4 KB) | 512 KB SRAM |
+| Firmware image | 246 KiB | 2 MiB app partition |
 
-A full 320×240 frame does not fit the 40 MHz SPI budget at 30 fps, hence the 304×228 video area
-with an 8/6 px border.
+A 320×240 frame would take ≈30.7 ms just to push, leaving only ≈2.6 ms of the 33.3 ms frame
+budget for decoding, so the video area is trimmed to 304×228 (8/6 px border).
 
 ## Repository layout
 
 ```
 firmware/
-  partitions.csv        2 MB app + 14.6 MB media
+  partitions.csv        2 MiB app + 13.9 MiB media
   sdkconfig.defaults    16 MB flash, DIO @ 80 MHz, USB-JTAG console
   main/
     main.c              boot order: board → LCD → media → audio → player
@@ -95,7 +95,7 @@ tools/
 |---|---|---|
 | [ESP-IDF](https://docs.espressif.com/projects/esp-idf/) | v6.1 | `idf.py` must be on `PATH` |
 | Python | 3.11+ | the ESP-IDF virtualenv is fine |
-| ffmpeg / ffprobe | 6+ | on `PATH` |
+| ffmpeg / ffprobe | recent build (4.3+) | on `PATH` |
 | yt-dlp | optional | only if `--source` is a URL |
 | USB cable | — | native USB-Serial/JTAG; no extra driver |
 
@@ -104,10 +104,17 @@ tools/
 ```powershell
 git clone https://github.com/SmallStackApple/badapple-on-k10
 cd badapple-on-k10
-. C:\Espressif\tools\Microsoft.v6.1.PowerShell_profile.ps1   # or: . $HOME/esp/esp-idf/export.sh
+# Path of the profile script depends on where YOU installed ESP-IDF.
+# This is the default of the Windows installer; use yours, then check `idf.py --version`.
+. C:\Espressif\tools\Microsoft.v6.1.PowerShell_profile.ps1
+# Linux/macOS: . $HOME/esp/esp-idf/export.sh
 
 python tools\build.py --port COM8 --source "D:\videos\badapple!!.mp4"
 ```
+
+> The line starting with `.` loads your ESP-IDF environment. Its path is installation-specific:
+> the one above is only the Windows installer's default. After sourcing it, `idf.py --version`
+> should print `v6.1`.
 
 That single command generates the media blob, builds the firmware, flashes bootloader + app +
 partition table, and writes the media image to `0x210000`.
@@ -204,12 +211,13 @@ Panel setup: `MADCTL = 0xE0` (MX | MY | MV), inversion off, BGR bit clear.
 |---|---|---|---|
 | `nvs` | data/nvs | `0x9000` | 16 KB |
 | `phy_init` | data/phy | `0xD000` | 4 KB |
-| `factory` | app | `0x10000` | 2 MB |
-| `media` | data (spiffs subtype) | `0x210000` | 14.6 MB |
+| `factory` | app | `0x10000` | 2 MiB |
+| `media` | data (spiffs subtype) | `0x210000` | 13.94 MiB (14.61 MB) |
 
 The media partition overwrites the factory `model` / `voice_data` / `fr` AI partitions, so the
-stock AI features are unavailable while this firmware is installed. Restore with the backup
-described below.
+stock AI features stop working while this firmware is installed. **Only a full-chip backup can
+bring them back**: Mind+ can reflash *its own* firmware, but it does not restore the factory AI
+model partitions. Take the backup before the first flash (see below).
 
 ### Audio tuning
 
@@ -233,7 +241,7 @@ sounds noticeably better.
 |---|---|
 | `firmware (esp32s3)` | builds in `espressif/idf:release-v6.1`, prints `idf.py size`, uploads `badapple-firmware` (app, bootloader, partition table, `flash_args`) |
 | `media pipeline` | packs a synthetic 4 s ffmpeg test clip and validates the `BAV1` header/offsets |
-| `tools (python)` | byte-compiles `tools/` and checks `build_media.py --help` |
+| `tools (python)` | byte-compiles `tools/` and checks `build_media.py --help` / `build.py --help` |
 
 CI never needs the copyrighted source video or a board.
 
@@ -241,14 +249,18 @@ CI never needs the copyrighted source video or a board.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Solid red screen at boot | `media_open()` failed — blank partition | flash `media/badapple.bin` at `0x210000` |
+| Solid **blue** screen at boot | `media_open()` failed — the media partition is blank | flash `media/badapple.bin` at `0x210000` |
 | `bad media magic` in the log | media written at the wrong offset or truncated | reflash with `tools/build.py --force` |
 | No sound | amplifier not enabled | check TCA9555 `P1.7` and the `0xFF` output latches |
 | Harsh / distorted audio | speaker limit, clipping | lower `AUDIO_VOLUME`, deepen `EQ_GAIN_DB` |
 | A/B unresponsive | input latches not set | keep `OUT0/OUT1 = 0xFF` |
 | `--port` not found | wrong USB socket | use the native USB port; `idf.py -p COM8 monitor` lists nothing = driver/cable issue |
 | Flash fails at 921600 | cable or hub | retry with `--baud 460800` |
-| AI features gone | media partition replaced the model partitions | restore the factory image (below) |
+| AI features gone | media partition replaced the model partitions | restore the full-chip backup (below) |
+
+> The failure screen is filled with `k10_rgb565(255, 0, 0)`. Red and blue come out exchanged on
+> this panel (its colour order does not match the MADCTL setting), so it shows **blue**. The video
+> is pure black/white, so playback is unaffected.
 
 ## Backup & restore
 
@@ -266,8 +278,10 @@ esptool --chip esp32s3 -p COM8 -b 921600 write-flash 0 `
   "F:\Code\badapple-on-k10\backups\k10_factory_16mb.bin"
 ```
 
-`backups/` is gitignored — keep your own copy somewhere safe. DFRobot's *Mind+ → Restore
-factory settings* also works if you never backed up.
+`backups/` is gitignored — keep your own copy somewhere safe (adjust the path above to where you
+store it). There is **no** Mind+ fallback for the AI partitions: Mind+ can restore its own firmware
+image, but not the factory `model` / `voice_data` / `fr` data. If you never backed up, those
+partitions cannot be recovered.
 
 ## License & third-party content
 

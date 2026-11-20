@@ -6,7 +6,7 @@
 ![ESP-IDF v6.1](https://img.shields.io/badge/ESP--IDF-v6.1-blue)
 
 在 **DFRobot 行空板 K10** 上播放完整的 3 分 39 秒《Bad Apple!!》影绘 MV，带声音。
-视频和音频都存放在板载 16 MB flash 里：不用 TF 卡，不用 Arduino 框架，也不用外接 DAC。
+视频和音频都存放在板载 16 MB flash 里：不用 TF 卡，不用 Arduino 框架，也不用额外接线。
 
 [English](README.md) | **简体中文**
 
@@ -18,12 +18,12 @@
 | | |
 |---|---|
 | 开发板 | UNIHIKER K10 — ESP32-S3（N16R8），240 MHz，16 MB flash，8 MB PSRAM |
-| 屏幕 | 2.8 寸 320×240 IPS（ILI9341），SPI @ 40 MHz |
+| 屏幕 | 2.8 寸 320×240 彩色 LCD（ILI9341），SPI @ 40 MHz |
 | 视频 | 304×228，30 fps，1-bit 全帧 RLE — 6574 帧，平均约 982 B/帧 |
 | 音频 | 16 kHz 单声道 s16le PCM → NS4168，双二阶 EQ + 软限幅 |
-| 媒体 | 12.87 MiB，写入独立的 14.6 MiB 分区 |
+| 媒体 | 12.87 MiB，写入独立的 13.94 MiB（14.61 MB）分区 |
 | 固件 | ESP-IDF v6.1，FreeRTOS，两个绑核任务，无 WiFi/BT |
-| 从上电到首帧 | ≈1.4 秒（其中约 0.9 秒是屏幕初始化） |
+| 从上电到首帧 | ≈1.4 秒（约 0.9 秒启动+屏幕初始化，再加 0.5 秒同步门） |
 | 按键 | **A** 暂停/继续，**B** 从头播放；播完自动循环 |
 
 ## 实现思路
@@ -42,8 +42,9 @@
                      └──────────────────┘            └──────────────────┘
 ```
 
-- **视频通路**：`uint32` 帧索引可以 O(1) 定位任意帧。整帧解码到 RGB565 缓冲
-  （304×228×2 = 138,624 B），一次性 DMA 推屏，不会看到画到一半的画面。
+- **视频通路**：`uint32` 帧索引可以 O(1) 定位任意帧。整帧先解码到 RGB565 缓冲
+  （304×228×2 = 138,624 B），再按 32 行一块（约 19 KB，低于 DMA 上限）推给屏幕，
+  第一像素发出前整帧已经准备好。
 - **音频通路**：音频任务每次读 2048 个单声道样本，过一个峰值双二阶滤波器
   （3.5 kHz、−5 dB、Q=1.2），乘 0.45 音量，在 ±0.95 处软限幅，再复制成立体声，
   写入 4 × 128 帧的 I2S DMA 环形缓冲。
@@ -56,19 +57,20 @@
 
 | 环节 | 开销 | 预算 |
 |---|---|---|
-| 整帧 SPI 传输（138,624 B @ 40 MHz） | ≈27.7 ms | 33.3 ms/帧 |
-| RLE 解码 + RGB565 填充（69,312 像素） | < 2 ms | — |
-| flash 读取（平均一帧） | ≈1 ms | — |
-| 内部 RAM | ≈160 KB（帧缓冲 135 KB、音频 8 KB、RLE 4 KB） | 320 KB DRAM |
-| 固件体积 | 246 KB | 2 MB app 分区 |
+| 整帧 SPI 传输（138,624 B @ 40 MHz，32 行一块） | ≈27.7 ms | 33.3 ms/帧 |
+| RLE 解码 + RGB565 填充（69,312 像素） | ≈1–2 ms（估算） | — |
+| flash 读取（平均一帧） | ≈2 ms（估算） | — |
+| 内部 RAM | ≈151 KB（帧缓冲 135 KB、PCM 4 KB + 立体声 8 KB、RLE 4 KB） | 512 KB SRAM |
+| 固件体积 | 246 KiB | 2 MiB app 分区 |
 
-320×240 全屏在 40 MHz SPI 下跑不满 30 fps，所以视频区做成了 304×228，四周留 8/6 像素黑边。
+320×240 的整帧光传输就要 ≈30.7 ms，33.3 ms 的帧预算只剩 ≈2.6 ms 留给解码，所以视频区缩到
+304×228，四周留 8/6 像素黑边。
 
 ## 目录结构
 
 ```
 firmware/
-  partitions.csv        2 MB app + 14.6 MB media
+  partitions.csv        2 MiB app + 13.9 MiB media
   sdkconfig.defaults    16 MB flash、DIO @ 80 MHz、USB-JTAG 控制台
   main/
     main.c              启动顺序：board → LCD → media → audio → player
@@ -93,7 +95,7 @@ tools/
 |---|---|---|
 | [ESP-IDF](https://docs.espressif.com/projects/esp-idf/) | v6.1 | `idf.py` 要在 `PATH` 里 |
 | Python | 3.11+ | 用 ESP-IDF 自带的虚拟环境即可 |
-| ffmpeg / ffprobe | 6+ | 在 `PATH` 里 |
+| ffmpeg / ffprobe | 较新版本（4.3+） | 在 `PATH` 里 |
 | yt-dlp | 可选 | 只有 `--source` 传 URL 时才需要 |
 | USB 线 | — | 用原生 USB-Serial/JTAG，不需要额外驱动 |
 
@@ -102,10 +104,16 @@ tools/
 ```powershell
 git clone https://github.com/SmallStackApple/badapple-on-k10
 cd badapple-on-k10
-. C:\Espressif\tools\Microsoft.v6.1.PowerShell_profile.ps1   # Linux/macOS: . $HOME/esp/esp-idf/export.sh
+# 这里的路径取决于你自己的 ESP-IDF 安装位置。
+# 下面只是 Windows 安装器的默认路径；请换成实际的 profile 脚本，再确认 `idf.py --version`
+. C:\Espressif\tools\Microsoft.v6.1.PowerShell_profile.ps1
+# Linux/macOS 通常是: . $HOME/esp/esp-idf/export.sh
 
 python tools\build.py --port COM8 --source "D:\videos\badapple!!.mp4"
 ```
+
+> 以 `.` 开头那一行是加载 ESP-IDF 环境，路径取决于你的安装位置；上面的只是 Windows 安装器的默认值。
+> 激活后跑一下 `idf.py --version`，确认输出是 `v6.1`。
 
 这一条命令会：生成媒体包 → 编译固件 → 烧写 bootloader/app/分区表 → 把媒体写到 `0x210000`。
 
@@ -198,11 +206,12 @@ TCA9555 是准双向口：按键引脚配置成输入后，输出锁存器也必
 |---|---|---|---|
 | `nvs` | data/nvs | `0x9000` | 16 KB |
 | `phy_init` | data/phy | `0xD000` | 4 KB |
-| `factory` | app | `0x10000` | 2 MB |
-| `media` | data（spiffs 子类型） | `0x210000` | 14.6 MB |
+| `factory` | app | `0x10000` | 2 MiB |
+| `media` | data（spiffs 子类型） | `0x210000` | 13.94 MiB（14.61 MB） |
 
 媒体分区覆盖了原厂的 `model` / `voice_data` / `fr` 三个 AI 模型分区，装了这个固件后
-板载 AI 功能不可用。用下面的备份恢复。
+板载 AI 功能就不可用。**只有整片备份能恢复它们**：Mind+ 只能刷回它自己的固件，
+不会还原原厂的 AI 模型分区。所以请在第一次烧录前做好备份（见下文）。
 
 ### 音频调参
 
@@ -225,7 +234,7 @@ TCA9555 是准双向口：按键引脚配置成输入后，输出锁存器也必
 |---|---|
 | `firmware (esp32s3)` | 在 `espressif/idf:release-v6.1` 镜像里编译，输出 `idf.py size`，上传 `badapple-firmware`（app、bootloader、分区表、`flash_args`） |
 | `media pipeline` | 用 ffmpeg 生成 4 秒合成测试视频，打包后校验 `BAV1` 头和偏移 |
-| `tools (python)` | 对 `tools/` 做字节码检查，并跑 `build_media.py --help` |
+| `tools (python)` | 对 `tools/` 做字节码检查，并跑 `build_media.py --help` / `build.py --help` |
 
 CI 不需要源视频，也不需要真机。
 
@@ -233,14 +242,17 @@ CI 不需要源视频，也不需要真机。
 
 | 现象 | 可能原因 | 处理 |
 |---|---|---|
-| 开机纯红屏 | `media_open()` 失败，分区是空的 | 把 `media/badapple.bin` 写到 `0x210000` |
+| 开机纯蓝屏 | `media_open()` 失败，媒体分区是空的 | 把 `media/badapple.bin` 写到 `0x210000` |
 | 日志出现 `bad media magic` | 媒体写错偏移或被截断 | `tools/build.py --force` 重烧 |
 | 没有声音 | 功放没使能 | 检查 TCA9555 `P1.7` 和 `0xFF` 输出锁存 |
 | 声音刺耳/破音 | 小喇叭到极限 | 降低 `AUDIO_VOLUME`，加深 `EQ_GAIN_DB` |
 | A/B 没反应 | 输入锁存没置高 | 保持 `OUT0/OUT1 = 0xFF` |
 | 找不到串口 | USB 口插错 | 用原生 USB 口；`idf.py -p COM8 monitor` 无输出就检查线材 |
 | 921600 烧写失败 | 线材或 USB Hub | 用 `--baud 460800` 重试 |
-| AI 功能没了 | 媒体分区覆盖了模型分区 | 按下面恢复出厂镜像 |
+| AI 功能没了 | 媒体分区覆盖了模型分区 | 恢复整片备份（见下文） |
+
+> 出错画面填充的是 `k10_rgb565(255, 0, 0)`。这块屏的红蓝通道是反的（颜色顺序和 MADCTL 设置对不上），
+> 所以实际显示为**蓝色**。视频只有黑白色，正常播放不受影响。
 
 ## 备份与恢复
 
@@ -258,7 +270,9 @@ esptool --chip esp32s3 -p COM8 -b 921600 write-flash 0 `
   "F:\Code\badapple-on-k10\backups\k10_factory_16mb.bin"
 ```
 
-`backups/` 已 gitignore，请自己另存一份。没有备份也可以用 Mind+ 的「恢复初始设置」。
+`backups/` 已 gitignore，请自己另存一份（上面的路径改成你实际存放的位置）。AI 分区**没有 Mind+ 兜底**：
+Mind+ 只能恢复它自己的固件，恢复不了原厂的 `model` / `voice_data` / `fr` 数据。如果没备份过，
+这几个分区就找不回来了。
 
 ## 许可证与第三方内容
 

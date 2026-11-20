@@ -24,6 +24,8 @@ void app_main(void)
     esp_err_t err = media_open(&media);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "media open failed: %s", esp_err_to_name(err));
+        /* 0xF800: on this panel the RGB/BGR order is swapped, so this shows blue.
+         * It is only meant as an unrecoverable "no media" indicator. */
         k10_lcd_fill(k10_rgb565(255, 0, 0));
         while (1) {
             vTaskDelay(pdMS_TO_TICKS(1000));
