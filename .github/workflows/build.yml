@@ -21,7 +21,7 @@ jobs:
     env:
       IDF_CCACHE_ENABLE: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: ccache
         uses: actions/cache@v4
@@ -61,9 +61,9 @@ jobs:
     name: tools (python)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
