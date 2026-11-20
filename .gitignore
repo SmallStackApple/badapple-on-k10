@@ -1,0 +1,14 @@
+# 本机 / 生成文件
+/backups/
+/media/
+/firmware/build/
+/build/
+
+# ESP-IDF
+sdkconfig
+sdkconfig.old
+
+# 系统
+Thumbs.db
+desktop.ini
+.DS_Store

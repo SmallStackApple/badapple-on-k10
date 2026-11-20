@@ -1,0 +1,22 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "k10_board.c"
+        "k10_lcd.c"
+        "k10_audio.c"
+        "media.c"
+        "player.c"
+    INCLUDE_DIRS "."
+    REQUIRES
+        esp_lcd
+        esp_driver_i2s
+        esp_driver_i2c
+        esp_driver_spi
+        esp_driver_gpio
+        spi_flash
+        esp_partition
+        esp_timer
+        esp_common
+    PRIV_REQUIRES
+        freertos
+)
