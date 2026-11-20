@@ -1,8 +1,11 @@
 # Bad Apple!! on UNIHIKER K10
 
+[![build](https://github.com/SmallStackApple/badapple-on-k10/actions/workflows/build.yml/badge.svg)](https://github.com/SmallStackApple/badapple-on-k10/actions/workflows/build.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 在 DFRobot 行空板 K10（ESP32-S3 N16R8）上播放 Bad Apple!!。整段 3 分 39 秒的视频和音频存在板载 16MB flash 里，不需要 TF 卡。
 
-![preview](docs/preview.png)
+> 仓库不包含原视频/音频帧（版权原因）。按下方命令用你自己的源文件生成媒体，`--preview` 可以导出一帧 PNG 看效果。
 
 ## 效果
 
@@ -70,6 +73,10 @@ esptool --chip esp32s3 -p COM8 -b 921600 write-flash 0x210000 media\badapple.bin
 
 `idf.py flash` 会写入 bootloader、分区表和 app；媒体单独写在 `0x210000`。之后只更新固件时不需要重新写媒体。
 
+## 持续集成
+
+`.github/workflows/build.yml` 在每次 push / PR 时用官方镜像 `espressif/idf:release-v6.1` 编译固件，并上传 `badapple.bin`、bootloader 和分区表作为 artifact；另有一个 job 对 `tools/` 下的 Python 脚本做语法检查。CI 只编译固件，媒体需要本地用 ffmpeg 生成（源视频不入库）。
+
 ## 媒体格式
 
 `media/badapple.bin` 约 12.87 MiB：
@@ -101,6 +108,16 @@ esptool --chip esp32s3 -p COM8 -b 921600 write-flash 0 `
 ```
 
 注意：`media` 分区覆盖了原厂的 `model` / `voice_data` / `fr` 三个 AI 模型分区。Bad Apple 固件下 AI 功能不可用；需要时用上面的整片备份或 Mind+「恢复初始设置」恢复。
+
+## 许可证与版权
+
+本仓库的**代码和文档**采用 [MIT License](LICENSE)，可自由使用、修改、分发。
+
+**第三方内容不在此许可范围内：**
+
+- 《Bad Apple!!》原始音乐、MV 及其中角色/影像的版权归原作者与权利方所有（音乐：Alstroemeria Records / ZUN 相关权利方；影绘 MV：原作者）。仓库**不包含**任何原视频、音频或视频帧，`.mp4`、生成的 `media/badapple.bin`、预览图都在 `.gitignore` 中。
+- 自行转换、烧录、分发媒体文件前，请确认你拥有相应授权。把生成的媒体包或录屏公开发布可能构成侵权。
+- 本项目与 DFRobot、Espressif 无关联；K10 的引脚与分区信息来自公开资料，相关商标归各自所有者。
 
 ## 已知限制
 

@@ -4,6 +4,15 @@
 /firmware/build/
 /build/
 
+# 版权素材：不随仓库分发（请自行准备源视频）
+/badapple!!.mp4
+/*.mp4
+/*.mkv
+/*.webm
+/*.avi
+/docs/preview.png
+/preview*.png
+
 # ESP-IDF
 sdkconfig
 sdkconfig.old
