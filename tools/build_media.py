@@ -30,23 +30,20 @@ import time
 WIDTH = 304
 HEIGHT = 228
 FPS = 30
-AUDIO_RATE = 22050
-AUDIO_CODEC_IMA = 1
+AUDIO_RATE = 16000
 MAGIC = b"BAV1"
-HEADER_SIZE = 4 + 2 * 4 + 4 * 9
+HEADER_SIZE = 4 + 2 * 4 + 4 * 6
 RUN_RE = re.compile(r"0+|1+")
 MAX_RUN = 127
 
 
-def probe(video: str) -> float:
+def probe(video: str) -> None:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration",
          "-of", "default=nw=1:nk=1", video],
         check=True, capture_output=True, text=True,
     )
-    duration = float(out.stdout.strip())
-    print(f"source duration: {duration:.3f}s")
-    return duration
+    print(f"source duration: {float(out.stdout.strip()):.3f}s")
 
 
 def encode_frames(video: str):
@@ -87,47 +84,12 @@ def encode_frames(video: str):
     return frames
 
 
-def encode_audio(video: str, path: str) -> tuple[bytes, int, int, int]:
-    """Return (adpcm data, block_align, samples_per_block, sample_rate)."""
+def encode_audio(video: str, path: str) -> None:
     subprocess.run(
         ["ffmpeg", "-v", "error", "-y", "-i", video, "-vn",
-         "-ac", "1", "-ar", str(AUDIO_RATE), "-c:a", "adpcm_ima_wav",
-         "-block_size", "1024", path],
+         "-ac", "1", "-ar", str(AUDIO_RATE), "-f", "s16le", path],
         check=True,
     )
-
-    data = open(path, "rb").read()
-    if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
-        sys.exit("ffmpeg did not produce a WAV file")
-
-    fmt = None
-    pcm = None
-    pos = 12
-    while pos + 8 <= len(data):
-        chunk_id = data[pos:pos + 4]
-        size = struct.unpack_from("<I", data, pos + 4)[0]
-        payload = data[pos + 8:pos + 8 + size]
-        if chunk_id == b"fmt ":
-            fmt = payload
-        elif chunk_id == b"data":
-            pcm = payload
-        pos += 8 + size + (size & 1)
-
-    if fmt is None or pcm is None or len(fmt) < 20:
-        sys.exit("bad WAV: missing fmt/data chunk")
-
-    tag, channels, rate, _byte_rate, block_align, bits = struct.unpack_from(
-        "<HHIIHH", fmt, 0
-    )
-    samples_per_block = struct.unpack_from("<H", fmt, 18)[0]
-    if tag != 0x11 or channels != 1 or bits != 4:
-        sys.exit(f"unexpected WAV format: tag={tag:#x} ch={channels} bits={bits}")
-    if block_align < 5 or samples_per_block < 2:
-        sys.exit("unexpected ADPCM block layout")
-
-    print(f"audio: IMA ADPCM {rate}Hz mono, block_align={block_align}, "
-          f"samples_per_block={samples_per_block}")
-    return pcm, block_align, samples_per_block, rate
 
 
 def main() -> None:
@@ -137,22 +99,22 @@ def main() -> None:
     ap.add_argument("--preview", help="optional: write one 304x228 PNG preview")
     args = ap.parse_args()
 
-    duration = probe(args.video)
+    probe(args.video)
     frames = encode_frames(args.video)
     frame_count = len(frames)
 
     with tempfile.TemporaryDirectory() as tmp:
-        wav_path = os.path.join(tmp, "audio.wav")
-        audio, block_align, samples_per_block, rate = encode_audio(args.video, wav_path)
+        pcm_path = os.path.join(tmp, "audio.pcm")
+        encode_audio(args.video, pcm_path)
+        audio = open(pcm_path, "rb").read()
 
-    decoded_max = (len(audio) // block_align) * samples_per_block
-    audio_samples = min(int(round(duration * rate)), decoded_max)
+    if len(audio) % 2:
+        audio += b"\x00"
+    audio_samples = len(audio) // 2
     duration_video = frame_count / FPS
-    duration_audio = audio_samples / rate
+    duration_audio = audio_samples / AUDIO_RATE
     print(f"video: {frame_count} frames = {duration_video:.3f}s")
-    print(f"audio: {len(audio)} ADPCM bytes, block_align={block_align}, "
-          f"samples_per_block={samples_per_block}")
-    print(f"audio: {audio_samples} samples = {duration_audio:.3f}s")
+    print(f"audio: {audio_samples} samples = {duration_audio:.3f}s, {len(audio)} bytes")
 
     frame_data_off = HEADER_SIZE + 4 * frame_count
     offsets = []
@@ -167,10 +129,9 @@ def main() -> None:
     audio_off = (cursor + 3) & ~3
 
     header = struct.pack(
-        "<4sHHHHIIIIIIIII",
-        MAGIC, 2, WIDTH, HEIGHT, FPS, frame_count,
-        rate, AUDIO_CODEC_IMA, len(audio), audio_samples, block_align,
-        samples_per_block, frame_data_off, audio_off,
+        "<4sHHHHIIIIII",
+        MAGIC, 1, WIDTH, HEIGHT, FPS, frame_count,
+        AUDIO_RATE, audio_samples, frame_data_off, audio_off, len(audio),
     )
     assert len(header) == HEADER_SIZE
 

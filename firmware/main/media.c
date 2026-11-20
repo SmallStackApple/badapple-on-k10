@@ -29,7 +29,7 @@ esp_err_t media_open(media_t *m)
         return ESP_ERR_NOT_FOUND;
     }
 
-    uint8_t hdr[48];
+    uint8_t hdr[36];
     ESP_RETURN_ON_ERROR(esp_partition_read(m->part, 0, hdr, sizeof(hdr)),
                         TAG, "read header");
     if (memcmp(hdr, "BAV1", 4) != 0) {
@@ -43,21 +43,15 @@ esp_err_t media_open(media_t *m)
     m->fps = rd16(hdr + 10);
     m->frame_count = rd32(hdr + 12);
     m->audio_rate = rd32(hdr + 16);
-    m->audio_codec = rd32(hdr + 20);
-    m->audio_bytes = rd32(hdr + 24);
-    m->audio_samples = rd32(hdr + 28);
-    m->audio_block_align = rd32(hdr + 32);
-    m->audio_samples_per_block = rd32(hdr + 36);
-    m->frame_data_off = rd32(hdr + 40);
-    m->audio_off = rd32(hdr + 44);
+    m->audio_samples = rd32(hdr + 20);
+    m->frame_data_off = rd32(hdr + 24);
+    m->audio_off = rd32(hdr + 28);
+    m->audio_bytes = rd32(hdr + 32);
 
-    if (version != 2 || m->width != 304 || m->height != 228 || m->fps != 30 ||
-        m->audio_rate != 22050 || m->audio_codec != 1 ||
-        m->audio_block_align < 5 || m->audio_samples_per_block < 2 ||
-        m->frame_count == 0) {
-        ESP_LOGE(TAG, "unsupported media: v%u %ux%u@%uHz %u frames audio %uHz codec %u",
-                 version, m->width, m->height, m->fps, m->frame_count,
-                 m->audio_rate, m->audio_codec);
+    if (version != 1 || m->width != 304 || m->height != 228 || m->fps != 30 ||
+        m->audio_rate != 16000 || m->frame_count == 0) {
+        ESP_LOGE(TAG, "unsupported media: v%u %ux%u@%uHz %u frames audio %uHz",
+                 version, m->width, m->height, m->fps, m->frame_count, m->audio_rate);
         return ESP_ERR_INVALID_VERSION;
     }
 
@@ -68,7 +62,7 @@ esp_err_t media_open(media_t *m)
                  (unsigned)table_size);
         return ESP_ERR_NO_MEM;
     }
-    ESP_RETURN_ON_ERROR(esp_partition_read(m->part, 48, m->offsets, table_size),
+    ESP_RETURN_ON_ERROR(esp_partition_read(m->part, 36, m->offsets, table_size),
                         TAG, "read offsets");
 
     if (m->audio_off + m->audio_bytes > m->part->size ||
@@ -77,7 +71,7 @@ esp_err_t media_open(media_t *m)
         return ESP_ERR_INVALID_SIZE;
     }
 
-    ESP_LOGI(TAG, "media: %ux%u @%ufps, %lu frames, ADPCM %lu Hz %lu bytes, %lu s",
+    ESP_LOGI(TAG, "media: %ux%u @%ufps, %lu frames, audio %lu Hz %lu bytes, %lu s",
              m->width, m->height, m->fps, (unsigned long)m->frame_count,
              (unsigned long)m->audio_rate, (unsigned long)m->audio_bytes,
              (unsigned long)(m->audio_samples / m->audio_rate));
