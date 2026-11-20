@@ -3,6 +3,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846f
+#endif
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -19,7 +24,43 @@ static const char *TAG = "player";
 
 #define RLE_CAP        4096
 #define AUDIO_CHUNK    2048          /* mono samples per read */
-#define AUDIO_VOLUME   6             /* /10 */
+#define AUDIO_VOLUME   45            /* percent */
+#define EQ_FREQ_HZ     3500.0f       /* tame the small-speaker harshness */
+#define EQ_Q           1.2f
+#define EQ_GAIN_DB     (-5.0f)
+
+typedef struct {
+    float b0, b1, b2, a1, a2;
+    float x1, x2, y1, y2;
+} biquad_t;
+
+static biquad_t s_eq;
+
+static void eq_init(biquad_t *q, float f0, float fs, float qv, float db)
+{
+    float a = powf(10.0f, db / 40.0f);
+    float w0 = 2.0f * (float)M_PI * f0 / fs;
+    float cosw = cosf(w0);
+    float alpha = sinf(w0) / (2.0f * qv);
+    float a0 = 1.0f + alpha / a;
+    q->b0 = (1.0f + alpha * a) / a0;
+    q->b1 = (-2.0f * cosw) / a0;
+    q->b2 = (1.0f - alpha * a) / a0;
+    q->a1 = (-2.0f * cosw) / a0;
+    q->a2 = (1.0f - alpha / a) / a0;
+    q->x1 = q->x2 = q->y1 = q->y2 = 0.0f;
+}
+
+static inline float eq_process(biquad_t *q, float x)
+{
+    float y = q->b0 * x + q->b1 * q->x1 + q->b2 * q->x2 -
+              q->a1 * q->y1 - q->a2 * q->y2;
+    q->x2 = q->x1;
+    q->x1 = x;
+    q->y2 = q->y1;
+    q->y1 = y;
+    return y;
+}
 
 static uint16_t *s_fb;
 static uint8_t *s_rle;
@@ -115,6 +156,7 @@ static void audio_task(void *arg)
             pos = 0;
             started = false;
             k10_audio_flush();
+            eq_init(&s_eq, EQ_FREQ_HZ, (float)m->audio_rate, EQ_Q, EQ_GAIN_DB);
         }
         if (s_paused) {
             vTaskDelay(pdMS_TO_TICKS(10));
@@ -141,7 +183,11 @@ static void audio_task(void *arg)
 
         int samples = (int)(n / sizeof(int16_t));
         for (int i = 0; i < samples; i++) {
-            int16_t v = (int16_t)((int32_t)s_pcm[i] * AUDIO_VOLUME / 10);
+            float x = (float)s_pcm[i] / 32768.0f;
+            float y = eq_process(&s_eq, x) * (AUDIO_VOLUME / 100.0f);
+            if (y > 0.95f) y = 0.95f;
+            if (y < -0.95f) y = -0.95f;
+            int16_t v = (int16_t)(y * 32767.0f);
             s_stereo[i * 2] = v;
             s_stereo[i * 2 + 1] = v;
         }
@@ -248,6 +294,8 @@ esp_err_t player_start(media_t *m)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
 
     start_set(esp_timer_get_time() + 500000);
+    eq_init(&s_eq, EQ_FREQ_HZ, (float)m->audio_rate, EQ_Q, EQ_GAIN_DB);
+
     BaseType_t ok;
     ok = xTaskCreatePinnedToCore(audio_task, "audio", 4096, m, 6, NULL, 0);
     if (ok != pdPASS) {
