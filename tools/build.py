@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""One-command build/flash helper for the K10 Bad Apple player.
+
+It does, in order:
+    1. locate (or download) the source video
+    2. convert it into media/badapple.bin
+    3. build the firmware with idf.py
+    4. flash firmware + media to the board
+
+Run it from an activated ESP-IDF environment (so that `idf.py` is on PATH):
+
+    python tools/build.py --port COM8 --source "D:\\videos\\badapple!!.mp4"
+    python tools/build.py --port COM8 --skip-media      # firmware only
+    python tools/build.py --no-flash                    # build media + firmware
+
+Only ASCII is printed on purpose (Windows console codepages are unreliable).
+"""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+FIRMWARE = ROOT / "firmware"
+MEDIA_BIN = ROOT / "media" / "badapple.bin"
+CACHE = ROOT / ".cache"
+MEDIA_MAGIC = b"BAV1"
+
+
+def log(msg: str) -> None:
+    print(f"[build] {msg}", flush=True)
+
+
+def die(msg: str) -> None:
+    print(f"[build] error: {msg}", file=sys.stderr, flush=True)
+    sys.exit(1)
+
+
+def run(cmd: list[str], **kwargs) -> None:
+    print("  $ " + " ".join(str(c) for c in cmd), flush=True)
+    env = dict(os.environ)
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    try:
+        subprocess.run(cmd, cwd=ROOT, check=True, env=env, **kwargs)
+    except FileNotFoundError:
+        die(f"command not found: {cmd[0]}")
+    except subprocess.CalledProcessError as exc:
+        die(f"command failed with exit code {exc.returncode}: {cmd[0]}")
+
+
+def has(tool: str) -> bool:
+    return shutil.which(tool) is not None
+
+
+def idf_cmd() -> list[str]:
+    exe = shutil.which("idf.py")
+    if exe:
+        return [exe]
+    idf_path = os.environ.get("IDF_PATH")
+    if idf_path and (Path(idf_path) / "tools" / "idf.py").exists():
+        return [sys.executable, str(Path(idf_path) / "tools" / "idf.py")]
+    die("idf.py not found. Activate ESP-IDF first, e.g.\n"
+        "        . C:\\Espressif\\tools\\Microsoft.v6.1.PowerShell_profile.ps1")
+    raise AssertionError
+
+
+def esptool_cmd() -> list[str]:
+    exe = shutil.which("esptool")
+    if exe:
+        return [exe]
+    return [sys.executable, "-m", "esptool"]
+
+
+def media_partition() -> tuple[int, int]:
+    """Return (offset, size) of the `media` row in partitions.csv."""
+    csv = FIRMWARE / "partitions.csv"
+    for line in csv.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        fields = [f.strip() for f in line.split(",")]
+        if len(fields) >= 5 and fields[0] == "media":
+            return int(fields[3], 0), int(fields[4], 0)
+    die(f"no `media` partition in {csv}")
+    raise AssertionError
+
+
+def find_source(explicit: str | None) -> Path:
+    if explicit:
+        if re.match(r"^https?://", explicit):
+            if not has("yt-dlp"):
+                die("--source is a URL but yt-dlp is not installed "
+                    "(pip install yt-dlp), or pass a local file instead")
+            CACHE.mkdir(exist_ok=True)
+            out = CACHE / "source.mp4"
+            log(f"downloading source with yt-dlp -> {out}")
+            run(["yt-dlp", "-f", "bv*+ba/b", "--merge-output-format", "mp4",
+                 "--no-playlist", "-o", str(out), explicit])
+            return out
+        path = Path(explicit).expanduser()
+        if not path.is_absolute():
+            path = (Path.cwd() / path).resolve()
+        if not path.exists():
+            die(f"source video not found: {path}")
+        return path
+
+    candidates = sorted(ROOT.glob("*.mp4")) + sorted(ROOT.glob("*.mkv"))
+    if len(candidates) == 1:
+        log(f"using source video: {candidates[0].name}")
+        return candidates[0]
+    if not candidates:
+        die("no source video found. Pass one explicitly:\n"
+            "        python tools/build.py --port COM8 --source path\\to\\badapple.mp4")
+    names = ", ".join(p.name for p in candidates)
+    die(f"several videos in the repo root ({names}); pick one with --source")
+
+
+def need_media(source: Path | None, force: bool) -> bool:
+    if force or not MEDIA_BIN.exists():
+        return True
+    return source is not None and source.stat().st_mtime > MEDIA_BIN.stat().st_mtime
+
+
+def pick_port(cli_port: str | None) -> str:
+    if cli_port:
+        return cli_port
+    if os.environ.get("ESPPORT"):
+        return os.environ["ESPPORT"]
+    try:
+        from serial.tools import list_ports
+        ports = [p.device for p in list_ports.comports()]
+    except Exception:
+        ports = []
+    hint = f" available: {', '.join(ports)}" if ports else ""
+    die(f"--port is required to flash (e.g. --port COM8).{hint}")
+    raise AssertionError
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(
+        description="Build and flash the K10 Bad Apple player.")
+    ap.add_argument("--port", help="serial port (e.g. COM8 or /dev/ttyACM0)")
+    ap.add_argument("--source", help="source video path or http(s) URL")
+    ap.add_argument("--skip-media", action="store_true",
+                    help="do not regenerate or flash the media blob")
+    ap.add_argument("--no-flash", action="store_true", help="build only")
+    ap.add_argument("--force", action="store_true",
+                    help="regenerate and reflash media even if it is up to date")
+    ap.add_argument("--preview", default="media/preview.png",
+                    help="write one 304x228 PNG preview here")
+    ap.add_argument("--baud", type=int, default=921600,
+                    help="baud rate for the media image (default 921600)")
+    args = ap.parse_args()
+
+    t0 = time.time()
+    source = None
+    regenerate = False
+    if not args.skip_media:
+        source = find_source(args.source)
+        regenerate = need_media(source, args.force)
+        if regenerate:
+            if not has("ffmpeg") or not has("ffprobe"):
+                die("ffmpeg/ffprobe not found on PATH")
+            log(f"converting {source.name} -> {MEDIA_BIN.relative_to(ROOT)}")
+            run([sys.executable, str(ROOT / "tools" / "build_media.py"),
+                 str(source), "-o", str(MEDIA_BIN), "--preview", args.preview])
+        else:
+            log("media blob is up to date (use --force to rebuild)")
+
+    log("building firmware")
+    if not (FIRMWARE / "sdkconfig").exists():
+        run(idf_cmd() + ["-C", str(FIRMWARE), "set-target", "esp32s3"])
+    run(idf_cmd() + ["-C", str(FIRMWARE), "build"])
+
+    if args.no_flash:
+        log(f"done in {time.time() - t0:.1f}s (nothing flashed)")
+        return
+
+    port = pick_port(args.port)
+    log(f"flashing firmware to {port}")
+    run(idf_cmd() + ["-C", str(FIRMWARE), "-p", port, "flash"])
+
+    if not args.skip_media and regenerate:
+        offset, size = media_partition()
+        blob = MEDIA_BIN.stat().st_size
+        if blob > size:
+            die(f"media blob is {blob} bytes but the partition holds only {size}")
+        log(f"flashing media ({blob} bytes) at 0x{offset:06X}")
+        run(esptool_cmd() + ["--chip", "esp32s3", "-p", port,
+                             "-b", str(args.baud), "write-flash",
+                             f"0x{offset:06X}", str(MEDIA_BIN)])
+    elif not args.skip_media:
+        log("media unchanged, not reflashed")
+
+    log(f"done in {time.time() - t0:.1f}s")
+
+
+if __name__ == "__main__":
+    main()

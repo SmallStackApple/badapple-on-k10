@@ -12,6 +12,7 @@
 /*.avi
 /docs/preview.png
 /preview*.png
+/.cache/
 
 # ESP-IDF
 sdkconfig

@@ -72,3 +72,49 @@ jobs:
 
       - name: Check build_media.py --help
         run: python tools/build_media.py --help
+
+      - name: Check build.py --help
+        run: python tools/build.py --help
+
+  media:
+    name: media pipeline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Make a synthetic source clip
+        run: |
+          ffmpeg -v error -y \
+            -f lavfi -i "testsrc2=size=512x384:rate=30:duration=4" \
+            -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=4" \
+            -shortest -c:v libx264 -pix_fmt yuv420p -c:a aac /tmp/source.mp4
+
+      - name: Pack media
+        run: |
+          python tools/build_media.py /tmp/source.mp4 \
+            -o /tmp/media.bin --preview /tmp/preview.png
+
+      - name: Validate BAV1 header and offsets
+        run: |
+          python - <<'PY'
+          import os, struct
+
+          blob = open("/tmp/media.bin", "rb").read()
+          magic, ver, w, h, fps, frames, rate, samples, fdo, aoff, abytes = \
+              struct.unpack_from("<4sHHHHIIIIII", blob, 0)
+          assert magic == b"BAV1", magic
+          assert (ver, w, h, fps) == (1, 304, 228, 30)
+          assert 118 <= frames <= 122, frames
+          assert rate == 16000 and samples > 0 and abytes > 0
+          assert fdo == 36 + 4 * frames, (fdo, frames)
+          assert aoff >= fdo and aoff + abytes == len(blob), (aoff, abytes, len(blob))
+          # every frame offset must point inside the frame section
+          offsets = struct.unpack_from(f"<{frames}I", blob, 36)
+          assert all(fdo <= o < aoff for o in offsets)
+          assert os.path.getsize("/tmp/preview.png") > 0
+          print(f"ok: {frames} frames, audio {abytes} B @ 0x{aoff:X}")
+          PY
