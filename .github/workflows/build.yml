@@ -86,6 +86,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+
       - name: Make a synthetic source clip
         run: |
           ffmpeg -v error -y \
