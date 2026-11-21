@@ -101,6 +101,12 @@ tools/
 
 ### One command
 
+> [!WARNING]
+> Flashing replaces the factory `model` / `voice_data` / `fr` partitions with the media blob.
+> **Mind+ cannot restore them.** Dump the full 16 MB flash first — see
+> [Backup & restore](#backup--restore). `tools/build.py` asks for confirmation before writing the
+> media image.
+
 ```powershell
 git clone https://github.com/SmallStackApple/badapple-on-k10
 cd badapple-on-k10
@@ -109,6 +115,8 @@ cd badapple-on-k10
 . C:\Espressif\tools\Microsoft.v6.1.PowerShell_profile.ps1
 # Linux/macOS: . $HOME/esp/esp-idf/export.sh
 
+# D:\videos\... is an example: point --source at your own copy of the video
+# (a local path, or an http(s) URL if yt-dlp is installed).
 python tools\build.py --port COM8 --source "D:\videos\badapple!!.mp4"
 ```
 
@@ -123,6 +131,7 @@ partition table, and writes the media image to `0x210000`.
 |---|---|
 | `--port COM8` | serial port (or set `ESPPORT`) |
 | `--source PATH\|URL` | source video; defaults to the only `*.mp4` in the repo root |
+| `--yes` | skip the AI-partition confirmation (only after making a full-flash backup) |
 | `--skip-media` | firmware only (media already flashed) |
 | `--no-flash` | convert + build, touch no hardware |
 | `--force` | rebuild media even if it looks up to date |

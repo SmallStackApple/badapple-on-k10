@@ -101,6 +101,10 @@ tools/
 
 ### 一条命令
 
+> [!WARNING]
+> 烧录会把原厂的 `model` / `voice_data` / `fr` 分区换成媒体镜像，**Mind+ 恢复不了**。
+> 请先按[备份与恢复](#备份与恢复)做一份完整的 16 MB flash 备份。`tools/build.py` 在写媒体镜像前会要求确认。
+
 ```powershell
 git clone https://github.com/SmallStackApple/badapple-on-k10
 cd badapple-on-k10
@@ -109,6 +113,8 @@ cd badapple-on-k10
 . C:\Espressif\tools\Microsoft.v6.1.PowerShell_profile.ps1
 # Linux/macOS 通常是: . $HOME/esp/esp-idf/export.sh
 
+# D:\videos\... 只是示例，把 --source 换成你自己那份视频的路径
+# （本地路径即可；装了 yt-dlp 也可以直接传 http(s) URL）。
 python tools\build.py --port COM8 --source "D:\videos\badapple!!.mp4"
 ```
 
@@ -121,6 +127,7 @@ python tools\build.py --port COM8 --source "D:\videos\badapple!!.mp4"
 |---|---|
 | `--port COM8` | 串口（也可用环境变量 `ESPPORT`） |
 | `--source PATH\|URL` | 源视频；不传时自动使用仓库根目录唯一的 `*.mp4` |
+| `--yes` | 仅在已做好整片备份后，才用它跳过 AI 分区确认 |
 | `--skip-media` | 只更新固件（媒体已烧过） |
 | `--no-flash` | 只生成 + 编译，不碰硬件 |
 | `--force` | 即使媒体看起来是最新的也重新生成、重烧 |

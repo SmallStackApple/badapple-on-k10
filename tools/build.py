@@ -19,7 +19,6 @@ Only ASCII is printed on purpose (Windows console codepages are unreliable).
 from __future__ import annotations
 
 import argparse
-import glob
 import os
 import re
 import shutil
@@ -32,7 +31,6 @@ ROOT = Path(__file__).resolve().parent.parent
 FIRMWARE = ROOT / "firmware"
 MEDIA_BIN = ROOT / "media" / "badapple.bin"
 CACHE = ROOT / ".cache"
-MEDIA_MAGIC = b"BAV1"
 
 
 def log(msg: str) -> None:
@@ -145,6 +143,29 @@ def pick_port(cli_port: str | None) -> str:
     raise AssertionError
 
 
+def confirm_media_flash(yes: bool) -> None:
+    backup = ROOT / "backups" / "k10_factory_16mb.bin"
+    log("WARNING: writing the media image overwrites factory model/voice_data/fr partitions.")
+    log("Mind+ can restore its own firmware, but cannot restore those factory AI partitions.")
+    if backup.is_file() and backup.stat().st_size == 16 * 1024 * 1024:
+        log(f"16 MB backup file found (not checksum-verified): {backup}")
+    else:
+        log("NO verified full-flash backup found at backups/k10_factory_16mb.bin.")
+        log("Stop now and back up the whole 16 MB flash first; see README Backup & restore.")
+
+    if yes:
+        return
+    if not sys.stdin.isatty():
+        die("refusing to flash media without interactive confirmation; pass --yes only "
+            "after making a full-flash backup")
+    try:
+        answer = input("Type YES to continue with the flash operation: ").strip()
+    except EOFError:
+        die("no confirmation received; nothing was flashed")
+    if answer != "YES":
+        die("cancelled; nothing was flashed")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         description="Build and flash the K10 Bad Apple player.")
@@ -155,6 +176,8 @@ def main() -> None:
     ap.add_argument("--no-flash", action="store_true", help="build only")
     ap.add_argument("--force", action="store_true",
                     help="regenerate and reflash media even if it is up to date")
+    ap.add_argument("--yes", action="store_true",
+                    help="skip the media-flash confirmation (only after a full-flash backup)")
     ap.add_argument("--preview", default="media/preview.png",
                     help="write one 304x228 PNG preview here")
     ap.add_argument("--baud", type=int, default=921600,
@@ -164,9 +187,13 @@ def main() -> None:
     t0 = time.time()
     source = None
     regenerate = False
+    port = None
     if not args.skip_media:
         source = find_source(args.source)
         regenerate = need_media(source, args.force)
+        if regenerate and not args.no_flash:
+            port = pick_port(args.port)
+            confirm_media_flash(args.yes)
         if regenerate:
             if not has("ffmpeg") or not has("ffprobe"):
                 die("ffmpeg/ffprobe not found on PATH")
@@ -185,7 +212,9 @@ def main() -> None:
         log(f"done in {time.time() - t0:.1f}s (nothing flashed)")
         return
 
-    port = pick_port(args.port)
+    if port is None:
+        port = pick_port(args.port)
+
     log(f"flashing firmware to {port}")
     run(idf_cmd() + ["-C", str(FIRMWARE), "-p", port, "flash"])
 
